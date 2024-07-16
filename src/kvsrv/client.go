@@ -4,10 +4,12 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
+	// todo: not sure if needs concurrency control
+	counter int
+	id      int64
 }
 
 func nrand() int64 {
@@ -21,6 +23,8 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	// You'll have to add code here.
+	ck.counter = 0
+	ck.id = nrand()
 	return ck
 }
 
@@ -37,7 +41,21 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	c := ck.counter
+	ck.counter++
+	done := false
+	v := ""
+	for !done {
+		args := GetArgs{}
+		args.Key = key
+		args.ClientId = ck.id
+		args.ClientCounter = c
+
+		reply := GetReply{}
+		done = ck.server.Call("KVServer.Get", &args, &reply)
+		v = reply.Value
+	}
+	return v
 }
 
 // shared by Put and Append.
@@ -50,7 +68,22 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	return ""
+	c := ck.counter
+	ck.counter++
+	done := false
+	v := ""
+	for !done {
+		args := PutAppendArgs{}
+		args.Key = key
+		args.Value = value
+		args.ClientId = ck.id
+		args.ClientCounter = c
+
+		reply := PutAppendReply{}
+		done = ck.server.Call("KVServer."+op, &args, &reply)
+		v = reply.Value
+	}
+	return v
 }
 
 func (ck *Clerk) Put(key string, value string) {

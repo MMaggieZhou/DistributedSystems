@@ -11,12 +11,20 @@ import (
 )
 
 // failure scenarios:
-// partition:
-// function could hang forever if a leader is partitioned. (single client)
-// need add timeout; if there are more requests coming in, then
-// either use term returned from rf.Start or applyMsg to detect leader change
+// leader partition:
+// 		function could hang forever if a leader is partitioned
+//		so the log is never commited.
+// 		need to add timeout to handler method while waiting for ch
+//		to return
+//		caveat: after leader becomes follower and receive commited log,
+//		it may not match that in kv.pendingOps so need to check it explicitly
+//
 // unreliable network:
-// apply msg dedup
+// 		kvservers could receive duplicate msg
+//		dedup before apply msg, by kv.maxCommitClientSeq
+// kv server crash:
+// 		should be restored by raft, which upon restart,
+// 		will reach consensus and apply logs from beginning
 
 const Debug = false
 
@@ -68,100 +76,55 @@ type KVServer struct {
 
 	mmu                sync.Mutex
 	maxCommitClientSeq map[int64]int
-	currentTerm        int
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	op := Op{GetOp, args.Key, "", args.ClientId, args.ClientSeq}
+func (kv *KVServer) handlerUtil(op Op, method string) ApplyResponse {
+	response := ApplyResponse{}
 	index, term, isLeader := kv.rf.Start(op)
-	DPrintf("[starts]kv store %d takes get key %s,seq %d, index %d, term %d, isleader %t", kv.me, args.Key, args.ClientSeq, index, term, isLeader)
+	DPrintf("[starts]kv store %d takes %s op %s:%s,seq %d, index %d, term %d, isleader %t", kv.me, method, op.Key, op.Value, op.ClientSeq, index, term, isLeader)
 	if !isLeader {
-		kv.mu.Lock()
-		if term > kv.currentTerm {
-			kv.currentTerm = term
-			kv.onTermChange()
-		}
-		kv.mu.Unlock()
-		reply.Err = ErrWrongLeader
-		return
+		response.error = ErrWrongLeader
+		return response
 	}
 	ch := make(chan ApplyResponse)
 	kv.mu.Lock()
-	kv.pendingOps[index] = PendingOp{args.ClientId, args.ClientSeq, ch}
+	kv.pendingOps[index] = PendingOp{op.ClientId, op.ClientSeq, ch}
 	kv.mu.Unlock()
 	select {
-	case response := <-ch:
-		reply.Err = response.error
-		reply.Value = response.value
-	case <-time.After(time.Second * 2):
-		reply.Err = ErrWrongLeader
+	case val := <-ch:
+		response = val
+	case <-time.After(time.Second * 1):
+		response.error = ErrWrongLeader
 	}
 	kv.mu.Lock()
 	delete(kv.pendingOps, index)
 	kv.mu.Unlock()
-	DPrintf("[returns] kv store %d takes get key %s, seq %d, returns %s, val %s, index %d, term %d, isleader %t", kv.me, args.Key, args.ClientSeq, reply.Err, reply.Value, index, term, isLeader)
+	DPrintf("[returns] kv store %d takes %s op %s:%s , seq:%d, returns %s, val %s", kv.me, method, op.Key, op.Value, op.ClientSeq, response.error, response.value)
+	return response
+}
+
+func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	op := Op{GetOp, args.Key, "", args.ClientId, args.ClientSeq}
+	response := kv.handlerUtil(op, "get")
+	reply.Err = response.error
+	reply.Value = response.value
+	return
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{PutOp, args.Key, args.Value, args.ClientId, args.ClientSeq}
-	index, term, isLeader := kv.rf.Start(op)
-	DPrintf("[starts]kv store %d takes put %s:%s,seq%d, index %d, term %d, isleader %t", kv.me, args.Key, args.Value, args.ClientSeq, index, term, isLeader)
-	if !isLeader {
-		kv.mu.Lock()
-		if term > kv.currentTerm {
-			kv.currentTerm = term
-			kv.onTermChange()
-		}
-		kv.mu.Unlock()
-		reply.Err = ErrWrongLeader
-		return
-	}
-	ch := make(chan ApplyResponse)
-	kv.mu.Lock()
-	kv.pendingOps[index] = PendingOp{args.ClientId, args.ClientSeq, ch}
-	kv.mu.Unlock()
-	select {
-	case response := <-ch:
-		reply.Err = response.error
-	case <-time.After(time.Second * 2):
-		reply.Err = ErrWrongLeader
-	}
-	kv.mu.Lock()
-	delete(kv.pendingOps, index)
-	kv.mu.Unlock()
-	DPrintf("[returns]kv store %d takes put %s:%s,seq %d, returns %s, index %d, term %d, isleader %t", kv.me, args.Key, args.Value, args.ClientSeq, reply.Err, index, term, isLeader)
+	response := kv.handlerUtil(op, "put")
+	reply.Err = response.error
+	return
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{AppendOp, args.Key, args.Value, args.ClientId, args.ClientSeq}
-	index, term, isLeader := kv.rf.Start(op)
-	DPrintf("[starts]kv store %d takes append %s:%s,seq %d, index %d, term %d, isleader %t", kv.me, args.Key, args.Value, args.ClientSeq, index, term, isLeader)
-	if !isLeader {
-		kv.mu.Lock()
-		if term > kv.currentTerm {
-			kv.currentTerm = term
-			kv.onTermChange()
-		}
-		kv.mu.Unlock()
-		reply.Err = ErrWrongLeader
-		return
-	}
-	ch := make(chan ApplyResponse)
-	kv.mu.Lock()
-	kv.pendingOps[index] = PendingOp{args.ClientId, args.ClientSeq, ch}
-	kv.mu.Unlock()
-	select {
-	case response := <-ch:
-		reply.Err = response.error
-	case <-time.After(time.Second * 2):
-		reply.Err = ErrWrongLeader
-	}
-	kv.mu.Lock()
-	delete(kv.pendingOps, index)
-	kv.mu.Unlock()
-	DPrintf("[returns]kv store %d takes append %s:%s seq %d, returns %s, index %d, term %d, isleader %t", kv.me, args.Key, args.Value, args.ClientSeq, reply.Err, index, term, isLeader)
+	response := kv.handlerUtil(op, "append")
+	reply.Err = response.error
+	return
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -183,13 +146,6 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-// not thread safe
-func (kv *KVServer) onTermChange() { // might change from leader to follower
-	for _, op := range kv.pendingOps {
-		op.ch <- ApplyResponse{"", ErrWrongLeader}
-	}
-}
-
 func (kv *KVServer) apply() {
 	for m := range kv.applyCh {
 		if m.CommandValid {
@@ -199,15 +155,17 @@ func (kv *KVServer) apply() {
 			kv.mu.Lock()
 			pendingOp, exists := kv.pendingOps[index]
 			if exists && (applOp.ClientId != pendingOp.clientId || applOp.ClientSeq != pendingOp.seq) {
-				kv.onTermChange()
+				pendingOp.ch <- ApplyResponse{"", ErrWrongLeader}
+				exists = false
 			}
-			pendingOp, exists = kv.pendingOps[index]
+			execute := false
+			seq, ok := kv.maxCommitClientSeq[applOp.ClientId]
+			if !ok || seq < applOp.ClientSeq {
+				execute = true
+				kv.maxCommitClientSeq[applOp.ClientId] = applOp.ClientSeq
+			}
 			switch applOp.Type {
 			case GetOp:
-				seq, ok := kv.maxCommitClientSeq[applOp.ClientId]
-				if !ok || seq < applOp.ClientSeq {
-					kv.maxCommitClientSeq[applOp.ClientId] = applOp.ClientSeq
-				}
 				value, ok := kv.data[applOp.Key]
 				if exists {
 					if !ok {
@@ -217,19 +175,15 @@ func (kv *KVServer) apply() {
 					}
 				}
 			case AppendOp:
-				seq, ok := kv.maxCommitClientSeq[applOp.ClientId]
-				if !ok || seq < applOp.ClientSeq {
+				if execute {
 					kv.data[applOp.Key] = kv.data[applOp.Key] + applOp.Value
-					kv.maxCommitClientSeq[applOp.ClientId] = applOp.ClientSeq
 				}
 				if exists {
 					pendingOp.ch <- ApplyResponse{"", OK}
 				}
 			case PutOp:
-				seq, ok := kv.maxCommitClientSeq[applOp.ClientId]
-				if !ok || seq < applOp.ClientSeq {
+				if execute {
 					kv.data[applOp.Key] = applOp.Value
-					kv.maxCommitClientSeq[applOp.ClientId] = applOp.ClientSeq
 				}
 				if exists {
 					pendingOp.ch <- ApplyResponse{"", OK}

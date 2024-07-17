@@ -1,0 +1,9 @@
+Fault-tolerance kv value store, whose statemachine is backed and replicated by raft consensus. 
+Faults: unreliable network; server partition; server restarts
+Out-of-scope: process pause; disk failure; server crash with unfinished persistance process. 
+
+test: 
+cd ~/src/raft 
+for i in {0..2}; do go test -race; done
+cd ~/src/kvraft 
+for i in {0..2}; do go test -race; done

@@ -1,6 +1,8 @@
 package kvraft
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+)
 import "crypto/rand"
 import "math/big"
 
@@ -8,6 +10,8 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 	lastActiveLeader int
+	seq              int
+	id               int64
 }
 
 func nrand() int64 {
@@ -21,6 +25,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.seq = 0
+	ck.id = nrand()
 	return ck
 }
 
@@ -36,7 +42,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	args := GetArgs{key}
+	args := GetArgs{key, ck.id, ck.seq}
+	ck.seq++
 	reply := GetReply{}
 	for {
 		ok := ck.servers[ck.lastActiveLeader].Call("KVServer.Get", &args, &reply)
@@ -63,7 +70,8 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	args := PutAppendArgs{key, value}
+	args := PutAppendArgs{key, value, ck.id, ck.seq}
+	ck.seq++
 	reply := PutAppendReply{}
 	for {
 		ok := ck.servers[ck.lastActiveLeader].Call("KVServer."+op, &args, &reply)

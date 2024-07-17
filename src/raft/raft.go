@@ -428,7 +428,7 @@ func (rf *Raft) sendRequestVote(i int, ch chan bool) {
 // thread safe
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-		timeout := time.Duration(1000+(rand.Int63()%1000)) * time.Millisecond // old value 1000
+		timeout := time.Duration(500+(rand.Int63()%500)) * time.Millisecond // old value 1000
 		rf.mu.Lock()
 		isTimeout := rf.isElectionTimeout(timeout)
 		rf.mu.Unlock()

@@ -1,6 +1,8 @@
 package kvraft
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+)
 import "testing"
 import "os"
 

@@ -4,6 +4,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,14 @@ import (
 // kv server crash:
 // 		should be restored by raft, which upon restart,
 // 		will reach consensus and apply logs from beginning
+//
+// Snapshot:
+// Data structure: kv.data, kv.maxCommitClientSeq, kv.lastSnapshotIndex
+// Creating Snapshot: kv server checks persister for raft log size, and creates snapshot
+// 		if state size is too large (see kv.apply())
+// Install Snapshot: load the snapshot, and send error to all pendingOps with index prior
+// 		to the snapshot, since there' no way to verify it's duplicate or not
+// Restart: read snapshot from persister
 
 const Debug = false
 
@@ -69,13 +78,49 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
-
-	data       map[string]string
-	pendingOps map[int]PendingOp // log index -> PendingOp
-
-	mmu                sync.Mutex
+	maxraftstate       int // snapshot if log grows this big
+	data               map[string]string
 	maxCommitClientSeq map[int64]int
+	lastLogIndex       int
+	lastSnapshotIndex  int
+	persister          *raft.Persister
+
+	pendingOps map[int]PendingOp // log index -> PendingOp
+}
+
+func (kv *KVServer) takeSnapshot() {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.data) != nil || e.Encode(kv.maxCommitClientSeq) != nil || e.Encode(kv.lastLogIndex) != nil {
+		DPrintf("[erro takesnapshot] kv %d", kv.me)
+		return
+	}
+	DPrintf("[takesnapshot] kv %d, size %d, lastindex %d", kv.me, w.Len(), kv.lastSnapshotIndex)
+	kv.rf.Snapshot(kv.lastLogIndex, w.Bytes())
+	kv.lastSnapshotIndex = kv.lastLogIndex
+	DPrintf("[done takesnapshot] kv %d, lastsnapshot %d", kv.me, kv.lastSnapshotIndex)
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 {
+		return
+	}
+	DPrintf("[start readsnapshot] kv %d, log index %d, snapshot index %d, datasize %d", kv.me, kv.lastLogIndex, kv.lastSnapshotIndex, len(data))
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var datamap map[string]string
+	var maxCommitClientSeq map[int64]int
+	var lastSnapshotIndex int
+	// needs to be reference
+	if d.Decode(&datamap) != nil || d.Decode(&maxCommitClientSeq) != nil || d.Decode(&lastSnapshotIndex) != nil {
+		DPrintf("[erro readsnapshot] kv %d", kv.me)
+		return
+	}
+
+	kv.data = datamap
+	kv.maxCommitClientSeq = maxCommitClientSeq
+	kv.lastSnapshotIndex = lastSnapshotIndex
+	DPrintf("[done readsnapshot] kv %d, snapshot index %d", kv.me, kv.lastSnapshotIndex)
 }
 
 func (kv *KVServer) handlerUtil(op Op, method string) ApplyResponse {
@@ -189,6 +234,30 @@ func (kv *KVServer) apply() {
 					pendingOp.ch <- ApplyResponse{"", OK}
 				}
 			}
+			kv.lastLogIndex = index
+			raftStateSize := kv.persister.RaftStateSize()
+			DPrintf("[apply] kv %d, maxsize %d, raftStateSize %d", kv.me, kv.maxraftstate, raftStateSize)
+			// in case server have too many applymsg clogging up, don't
+			// let taking snapshot further slow it down by only do it if
+			// after a number of new logs have been applied.
+			if kv.maxraftstate > 0 && raftStateSize > kv.maxraftstate && kv.lastLogIndex-kv.lastSnapshotIndex > 20 {
+				DPrintf("[start takesnapshot] kv %d, max size %d, raft size %d, lastlog %d, lastsnapshot %d", kv.me, kv.maxraftstate, raftStateSize, kv.lastLogIndex, kv.lastSnapshotIndex)
+				kv.takeSnapshot()
+			}
+			kv.mu.Unlock()
+		} else {
+			DPrintf("[apply snapshot] kv %d, snapshot index %d", kv.me, m.SnapshotIndex)
+			kv.mu.Lock()
+			kv.readSnapshot(m.Snapshot)
+			kv.lastLogIndex = m.SnapshotIndex
+			// no way to verify if this pendingOps is duplicate or not,
+			// since log is dumped.
+			// hence fail the op to be safe
+			for i, pendingOp := range kv.pendingOps {
+				if i <= kv.lastLogIndex {
+					pendingOp.ch <- ApplyResponse{"", ErrWrongLeader}
+				}
+			}
 			kv.mu.Unlock()
 		}
 	}
@@ -215,15 +284,15 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
-	// You may need initialization code here.
-
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
 	kv.data = make(map[string]string)
 	kv.pendingOps = make(map[int]PendingOp)
 	kv.maxCommitClientSeq = make(map[int64]int)
+	kv.persister = persister
+	kv.readSnapshot(persister.ReadSnapshot())
+	kv.lastLogIndex = kv.lastSnapshotIndex
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+
 	go kv.apply()
 	return kv
 }

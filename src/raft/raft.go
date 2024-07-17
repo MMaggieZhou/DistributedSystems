@@ -489,18 +489,20 @@ func (rf *Raft) ticker() {
 func (rf *Raft) applyCmd() {
 	rf.mu.Lock()
 	logs := make([]Log, 0)
+	lastApplied := rf.lastApplied
 	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 		logs = append(logs, rf.getLog(i))
 	}
+	rf.lastApplied = rf.commitIndex
 	// need to release lock here before sending msg to channel,
 	// because this will trigger taking snapshot which requires lock
 	rf.mu.Unlock()
 
 	for _, log := range logs {
-		rf.lastApplied++ // could conflict with install snapshot
+		lastApplied++ // could conflict with install snapshot
 		msg := ApplyMsg{}
 		msg.Command = log.Command
-		msg.CommandIndex = rf.lastApplied
+		msg.CommandIndex = lastApplied
 		msg.CommandValid = true
 		rf.applyCh <- msg
 	}

@@ -18,11 +18,26 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type OpType int
+
+const (
+	PutOp OpType = iota + 1
+	AppendOp
+	GetOp
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Type  OpType
+	Key   string
+	Value string
+}
+
+type ApplyResponse struct {
+	success bool
+	value   string
 }
 
 type KVServer struct {
@@ -35,19 +50,64 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-}
+	data       map[string]string
+	pendingOps map[int]chan ApplyResponse
 
+	mmu              sync.Mutex
+	pendingApplyMsgs []raft.ApplyMsg
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{GetOp, args.Key, ""}
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	ch := make(chan ApplyResponse)
+	kv.mu.Lock()
+	kv.pendingOps[index] = ch
+	kv.mu.Unlock()
+	response := <-ch
+	if !response.success {
+		reply.Err = ErrNoKey
+	} else {
+		reply.Err = OK
+		reply.Value = response.value
+	}
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{PutOp, args.Key, args.Value}
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	ch := make(chan ApplyResponse)
+	kv.mu.Lock()
+	kv.pendingOps[index] = ch
+	kv.mu.Unlock()
+	_ = <-ch
+	reply.Err = OK
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{AppendOp, args.Key, args.Value}
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	ch := make(chan ApplyResponse)
+	kv.mu.Lock()
+	kv.pendingOps[index] = ch
+	kv.mu.Unlock()
+	_ = <-ch
+	reply.Err = OK
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -67,6 +127,34 @@ func (kv *KVServer) Kill() {
 func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
+}
+
+func (kv *KVServer) apply() {
+	for m := range kv.applyCh {
+		if m.CommandValid {
+			index := m.CommandIndex
+			op := m.Command.(Op)
+			kv.mu.Lock()
+			ch := kv.pendingOps[index]
+			delete(kv.pendingOps, index)
+			kv.mu.Unlock()
+			switch op.Type {
+			case GetOp:
+				value, ok := kv.data[op.Key]
+				if !ok {
+					ch <- ApplyResponse{false, ""}
+				} else {
+					ch <- ApplyResponse{true, value}
+				}
+			case AppendOp:
+				kv.data[op.Key] = kv.data[op.Key] + op.Value
+				ch <- ApplyResponse{true, ""}
+			case PutOp:
+				kv.data[op.Key] = kv.data[op.Value]
+				ch <- ApplyResponse{true, ""}
+			}
+		}
+	}
 }
 
 // servers[] contains the ports of the set of
@@ -96,6 +184,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.data = make(map[string]string)
+	kv.pendingOps = make(map[int]chan ApplyResponse)
+	//go kv.takeMsg()
+	//go kv.applyMsg()
+	go kv.apply()
 	return kv
 }

@@ -4,10 +4,10 @@ import "6.5840/labrpc"
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	lastActiveLeader int
 }
 
 func nrand() int64 {
@@ -35,8 +35,21 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
+	args := GetArgs{key}
+	reply := GetReply{}
+	for {
+		ok := ck.servers[ck.lastActiveLeader].Call("KVServer.Get", &args, &reply)
+		if !ok || reply.Err == ErrWrongLeader {
+			ck.lastActiveLeader = (ck.lastActiveLeader + 1) % len(ck.servers)
+			reply = GetReply{}
+		} else {
+			if reply.Err == ErrNoKey {
+				return ""
+			}
+			return reply.Value
+		}
+	}
 	return ""
 }
 
@@ -50,6 +63,17 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{key, value}
+	reply := PutAppendReply{}
+	for {
+		ok := ck.servers[ck.lastActiveLeader].Call("KVServer."+op, &args, &reply)
+		if !ok || reply.Err == ErrWrongLeader {
+			ck.lastActiveLeader = (ck.lastActiveLeader + 1) % len(ck.servers)
+			reply = PutAppendReply{}
+		} else {
+			return
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

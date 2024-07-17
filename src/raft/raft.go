@@ -428,7 +428,7 @@ func (rf *Raft) sendRequestVote(i int, ch chan bool) {
 // thread safe
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-		timeout := time.Duration(1000+(rand.Int63()%1000)) * time.Millisecond
+		timeout := time.Duration(1000+(rand.Int63()%1000)) * time.Millisecond // old value 1000
 		rf.mu.Lock()
 		isTimeout := rf.isElectionTimeout(timeout)
 		rf.mu.Unlock()
@@ -509,7 +509,7 @@ func (rf *Raft) applyCmd() {
 func (rf *Raft) applyCmdTicker() {
 	for rf.killed() == false {
 		rf.applyCmd()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
 	}
 }
 func (rf *Raft) heartbeatTicker() {
@@ -521,9 +521,22 @@ func (rf *Raft) heartbeatTicker() {
 		} else {
 			rf.mu.Unlock()
 		}
-
-		ms := 50 + (rand.Int63() % 50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		sendFaster := false
+		rf.mu.Lock()
+		if rf.isLeader {
+			for i, index := range rf.matchIndex {
+				if i != rf.me && index < rf.lastLogIndex() {
+					sendFaster = true
+					break
+				}
+			}
+		}
+		rf.mu.Unlock()
+		if sendFaster {
+			time.Sleep(time.Duration(30) * time.Millisecond)
+		} else {
+			time.Sleep(time.Duration(50) * time.Millisecond)
+		}
 	}
 }
 

@@ -12,7 +12,7 @@ import "6.5840/raft"
 import "sync"
 import "6.5840/labgob"
 
-const Debug = true
+const Debug = false
 
 func (kv *ShardKV) DPrintf(method string, format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -413,7 +413,7 @@ func (kv *ShardKV) executeDataUpdate(index int, applOp *Op) {
 
 	kv.DPrintf("apply client "+method, "index %d, key %s, v %s, shard %d, clientid %d, sep %d", index, applOp.Key, applOp.Value, shard, applOp.ClientId, applOp.ClientSeq)
 	pendingOp, exists := kv.pendingOps[index]
-	if kv.shardTransition || !kv.shardsToServe[shard] {
+	if !kv.shardsToServe[shard] || kv.shardsToReceive[shard] {
 		if exists {
 			pendingOp.ch <- ApplyResponse{"", ErrWrongGroup}
 		}
@@ -550,8 +550,10 @@ func (kv *ShardKV) executeInstallShards(index int, applOp *Op) {
 		}
 	} else {
 		kv.DPrintf("error ApplyShard, unknown", "index %d, configNum %d, shards %v", index, applOp.ConfigNum, shards)
+		// maybe previous ApplyShard has succeeded, but reply is lost; followed immediately
+		// by new config update
 		if exists {
-			pendingOp.ch <- ApplyResponse{"", OK} // TODO
+			pendingOp.ch <- ApplyResponse{"", OK}
 		}
 	}
 }

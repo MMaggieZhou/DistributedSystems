@@ -1,0 +1,60 @@
+Sharded KV store that provides linearizable read & write even during sharding scheme update.
+
+Summary 
+
+Server State 
+  Persisted State into Snapshot 
+    data[] - kv data 
+    configNum - version of current config 
+    shardsToServe - shards that this group serves 
+    shardsToSend - shards and the group id that need to be migrated away 
+    groups - server info to help make RPC calls during shard migration 
+    shardsToReceive - shards that need to migrated into this group from other groups; 
+      must be subset of shardsToServe
+    maxCommitClientSeq - the max sequence number per client that has been commited
+  Volatile State 
+    GId - group id of the replica set, assigned statically
+    shardTransition - whether the server is during shard transition, derived from shardsToSend and shardsToReceive 
+  General Rule
+    Set shardTransition to true if shardsToReceive and shardsToSend are empty 
+      else set to true 
+Get/Put/Append 
+  Obtain shard from key
+  If shard is in shardsToServe and not in shardsToReceive 
+    If request is newer than maxCommitClientSeq
+        Execute the request, update data[] accordingly 
+        Update maxCommitClientSeq accordingly
+    return success
+  Otherwise, return WrongGroupError
+
+Config Update 
+  Do periodically 
+    If the server is leader and shardTransition is false
+      Leader checks for config with configNum + 1 
+      If there is no config with configNum + 1
+        update configNum, shardsToServe, shardsToSend, groups, shardsToReceive accordingly 
+
+ShardMigration 
+  Do periodically 
+    If the server is leader and shardsToSend is nonempty 
+      Send the key/value map that belongs to shardsToSend, over InstallShards RPC, grouped by GId
+      After InstallShard returns success, delete the k/v from data[], remove shards from shardsToSend 
+      Update shardTransition to false, if shardsToReceive and shardsToSend are empty 
+
+  InstallShards 
+    RequestArgs structure
+      Shards - map from shard number to kv map 
+      ConfigNum - current Config number from sender 
+      MaxCommitClientSeq - the max sequence number per client for data included in Shards
+    Reply structure
+      Err - success or error info
+    Receiver Implementation 
+      if args.ConfigNum == configNum and shards in shardsToReceive 
+        update data[] and maxCommitClientSeq accordingly 
+        remove shards from shardsToReceive 
+        reply with success 
+      else if args.ConfigNum > configNum 
+        reply with error 
+      else
+        reply with success 
+

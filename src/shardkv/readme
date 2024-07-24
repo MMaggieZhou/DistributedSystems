@@ -1,5 +1,6 @@
 Fault-tolerant, Sharded KV store that provides linearizable read & write even during sharding scheme update.
-Auto-balance provided by shardctrler
+Auto-balance provided by shardctrler. 
+Built on top of Raft consensus.
 
 Summary 
 

@@ -1,4 +1,5 @@
-Sharded KV store that provides linearizable read & write even during sharding scheme update.
+Fault-tolerant, Sharded KV store that provides linearizable read & write even during sharding scheme update.
+Auto-balance provided by shardctrler
 
 Summary 
 

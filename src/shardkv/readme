@@ -58,3 +58,25 @@ ShardMigration
       else
         reply with success 
 
+Linearizability 
+  In order to maintain linearizability client operations even during config update, 
+  client operation&config update&shard migration should be executed after sequence 
+  is assigned and commited by Raft consensus
+
+Shard Migration Flow
+  Old group send shard data to new group 
+  New group accept shard data
+  Old group delete shard data
+
+Snapshot considerations 
+  In order to avoid waste resource redo shard migration, every step of shard migration
+  triggers taking snapshot
+
+Operation Deduplication
+  Similar to client operations, shard migration and config update operations can be duplicated, 
+  this can be detected by checking configNum from request args and server config state. 
+
+Considerations for more failure scenarios can be found in beginning of src/kvraft/server.go
+
+Test 
+  go test -race 
